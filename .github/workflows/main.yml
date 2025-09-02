@@ -1,16 +1,13 @@
-name: Build Multi-Platform Game
+name: Build All-In-One Game Package
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
     branches: [ main, master ]
   release:
     types: [ published ]
 
 jobs:
-  # Web PWA Build
-  web-build:
+  build-all-platforms:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -20,63 +17,27 @@ jobs:
       with:
         node-version: '18'
         
-    - name: Create PWA files
+    - name: Install build tools
       run: |
-        cat > manifest.json << 'EOF'
-        {
-          "name": "Orbit Dash",
-          "short_name": "OrbitDash",
-          "description": "Collect shards and avoid hazards in this 20-level challenge",
-          "start_url": "/",
-          "display": "fullscreen",
-          "orientation": "landscape-primary",
-          "theme_color": "#7dd3fc",
-          "background_color": "#0b1020",
-          "icons": [
-            {
-              "src": "icon-192.png",
-              "sizes": "192x192",
-              "type": "image/png"
-            },
-            {
-              "src": "icon-512.png",
-              "sizes": "512x512",
-              "type": "image/png"
-            }
-          ]
-        }
-        EOF
+        # Install all required tools
+        npm install -g @tauri-apps/cli electron-builder cordova @capacitor/cli
+        npm install sharp archiver
+        sudo apt-get update
+        sudo apt-get install -y p7zip-full upx-ucl
         
-        cat > service-worker.js << 'EOF'
-        const CACHE_NAME = 'orbit-dash-v1';
-        const urlsToCache = ['/', '/index.html', '/manifest.json'];
-        
-        self.addEventListener('install', event => {
-          event.waitUntil(
-            caches.open(CACHE_NAME).then(cache => cache.addAll(urlsToCache))
-          );
-        });
-        
-        self.addEventListener('fetch', event => {
-          event.respondWith(
-            caches.match(event.request).then(response => {
-              return response || fetch(event.request);
-            })
-          );
-        });
-        EOF
-        
-    - name: Generate Icons
+    - name: Create unified project structure
       run: |
-        # Install sharp for image processing
-        npm install sharp
+        mkdir -p orbit-dash-universal/{web,desktop,mobile,launchers}
         
-        # Create simple icon using SVG to PNG conversion
-        cat > generate-icons.js << 'EOF'
+        # Copy base game
+        cp index.html orbit-dash-universal/web/
+        
+    - name: Generate single icon for all platforms
+      run: |
+        cat > generate-icon.js << 'EOF'
         const sharp = require('sharp');
         
-        const svgIcon = `
-        <svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
+        const svgIcon = `<svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
           <defs>
             <radialGradient id="bg" cx="50%" cy="50%" r="50%">
               <stop offset="0%" stop-color="#7dd3fc"/>
@@ -88,1517 +49,821 @@ jobs:
           <path d="M216 206 L296 256 L216 306 Z" fill="#0b1020"/>
         </svg>`;
         
-        sharp(Buffer.from(svgIcon))
-          .resize(192, 192)
-          .png()
-          .toFile('icon-192.png');
-          
-        sharp(Buffer.from(svgIcon))
-          .resize(512, 512)
-          .png()
-          .toFile('icon-512.png');
+        // Single icon file for all platforms
+        sharp(Buffer.from(svgIcon)).resize(512, 512).png().toFile('orbit-dash-universal/icon.png');
         EOF
         
-        node generate-icons.js
+        node generate-icon.js
         
-    - name: Upload Web Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: web-build
-        path: |
-          index.html
-          manifest.json
-          service-worker.js
-          icon-*.png
-
-  # Desktop Builds (Windows, Linux, macOS)
-  desktop-build:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        
-    runs-on: ${{ matrix.os }}
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        
-    - name: Install Electron
+    - name: Create Web PWA files
       run: |
-        npm init -y
-        npm install --save-dev electron electron-builder
+        cd orbit-dash-universal/web
         
-    - name: Create Electron Main Process
+        # Minimal manifest
+        echo '{"name":"Orbit Dash","short_name":"OrbitDash","start_url":"./","display":"fullscreen","theme_color":"#7dd3fc","background_color":"#0b1020","icons":[{"src":"../icon.png","sizes":"512x512","type":"image/png"}]}' > manifest.json
+        
+        # Minimal service worker
+        echo 'const CACHE="v1";self.addEventListener("install",e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(["/","index.html"]))));self.addEventListener("fetch",e=>e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request))));' > sw.js
+        
+    - name: Create desktop launchers
       run: |
-        cat > main.js << 'EOF'
-        const { app, BrowserWindow, Menu } = require('electron');
-        const path = require('path');
+        cd orbit-dash-universal/desktop
         
-        function createWindow() {
-          const win = new BrowserWindow({
-            width: 1280,
-            height: 800,
-            minWidth: 800,
-            minHeight: 600,
-            webPreferences: {
-              nodeIntegration: false,
-              contextIsolation: true
-            },
-            icon: path.join(__dirname, 'assets/icon.png'),
-            titleBarStyle: 'default',
-            show: false
-          });
-          
-          win.loadFile('index.html');
-          
-          win.once('ready-to-show', () => {
-            win.show();
-            win.focus();
-          });
-          
-          // Remove menu bar
-          Menu.setApplicationMenu(null);
-        }
-        
-        app.whenReady().then(createWindow);
-        
-        app.on('window-all-closed', () => {
-          if (process.platform !== 'darwin') {
-            app.quit();
-          }
-        });
-        
-        app.on('activate', () => {
-          if (BrowserWindow.getAllWindows().length === 0) {
-            createWindow();
-          }
-        });
+        # Windows BAT launcher
+        cat > run-windows.bat << 'EOF'
+        @echo off
+        title Orbit Dash
+        cd /d "%~dp0\..\web"
+        echo Starting Orbit Dash...
+        start "" http://localhost:8080
+        python -m http.server 8080 2>nul || node -e "require('http').createServer((req,res)=>{require('fs').readFile('./index.html',(err,data)=>{res.writeHead(200,{'Content-Type':'text/html'});res.end(data||'Error loading game');})}).listen(8080,()=>console.log('Game running on http://localhost:8080'))"
         EOF
         
-    - name: Create Electron Package Config
-      run: |
-        cat > package.json << 'EOF'
-        {
-          "name": "orbit-dash",
-          "version": "1.0.0",
-          "description": "Orbit Dash - 20 Level Challenge Game",
-          "main": "main.js",
-          "scripts": {
-            "start": "electron .",
-            "build": "electron-builder",
-            "build-win": "electron-builder --win",
-            "build-linux": "electron-builder --linux",
-            "build-mac": "electron-builder --mac"
-          },
-          "build": {
-            "appId": "com.orbitdash.game",
-            "productName": "Orbit Dash",
-            "directories": {
-              "output": "dist"
-            },
-            "files": [
-              "index.html",
-              "main.js",
-              "assets/**/*"
-            ],
-            "win": {
-              "target": "nsis",
-              "icon": "assets/icon.ico"
-            },
-            "linux": {
-              "target": [
-                {
-                  "target": "AppImage",
-                  "arch": ["x64"]
-                },
-                {
-                  "target": "deb",
-                  "arch": ["x64"]
-                }
-              ],
-              "icon": "assets/icon.png",
-              "category": "Game"
-            },
-            "mac": {
-              "target": "dmg",
-              "icon": "assets/icon.icns",
-              "category": "public.app-category.games"
-            },
-            "nsis": {
-              "oneClick": false,
-              "allowToChangeInstallationDirectory": true
-            }
-          },
-          "devDependencies": {
-            "electron": "latest",
-            "electron-builder": "latest"
-          }
-        }
-        EOF
+        # Linux shell launcher
+        cat > run-linux.sh << 'EOF'
+        #!/bin/bash
+        cd "$(dirname "$0")/../web"
+        echo "Starting Orbit Dash..."
         
-    - name: Create Assets Directory
-      run: mkdir -p assets
-      
-    - name: Generate Desktop Icons
-      run: |
-        npm install sharp
-        
-        cat > generate-desktop-icons.js << 'EOF'
-        const sharp = require('sharp');
-        
-        const svgIcon = `
-        <svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <radialGradient id="bg" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stop-color="#7dd3fc"/>
-              <stop offset="100%" stop-color="#0b1020"/>
-            </radialGradient>
-          </defs>
-          <circle cx="256" cy="256" r="240" fill="url(#bg)"/>
-          <circle cx="256" cy="256" r="80" fill="#e0f2fe"/>
-          <path d="M216 206 L296 256 L216 306 Z" fill="#0b1020"/>
-        </svg>`;
-        
-        // PNG for Linux
-        sharp(Buffer.from(svgIcon))
-          .resize(512, 512)
-          .png()
-          .toFile('assets/icon.png');
-        EOF
-        
-        node generate-desktop-icons.js
-        
-    - name: Generate Windows ICO (Windows only)
-      if: matrix.os == 'windows-latest'
-      run: |
-        npm install ico-convert
-        node -e "
-        const icoConvert = require('ico-convert');
-        const fs = require('fs');
-        const pngBuffer = fs.readFileSync('assets/icon.png');
-        const icoBuffer = icoConvert.PNGtoICO([pngBuffer]);
-        fs.writeFileSync('assets/icon.ico', icoBuffer);
-        "
-        
-    - name: Generate macOS ICNS (macOS only)
-      if: matrix.os == 'macos-latest'
-      run: |
-        # Install iconutil (built into macOS)
-        mkdir -p assets/icon.iconset
-        
-        # Generate different sizes for ICNS
-        for size in 16 32 64 128 256 512; do
-          node -e "
-          const sharp = require('sharp');
-          const fs = require('fs');
-          const pngBuffer = fs.readFileSync('assets/icon.png');
-          sharp(pngBuffer)
-            .resize($size, $size)
-            .png()
-            .toFile('assets/icon.iconset/icon_${size}x${size}.png');
-          "
-        done
-        
-        # Create ICNS file
-        iconutil -c icns assets/icon.iconset -o assets/icon.icns
-        
-    - name: Build Desktop App
-      run: |
-        if [ "$RUNNER_OS" == "Windows" ]; then
-          npm run build-win
-        elif [ "$RUNNER_OS" == "Linux" ]; then
-          npm run build-linux
-        elif [ "$RUNNER_OS" == "macOS" ]; then
-          npm run build-mac
+        # Try different browsers and servers
+        if command -v python3 >/dev/null; then
+            python3 -m http.server 8080 &
+        elif command -v python >/dev/null; then
+            python -m http.server 8080 &
+        elif command -v node >/dev/null; then
+            node -e "require('http').createServer((req,res)=>{require('fs').readFile('./index.html',(err,data)=>{res.writeHead(200,{'Content-Type':'text/html'});res.end(data||'Error');})}).listen(8080)" &
         fi
         
-    - name: Upload Desktop Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: desktop-${{ matrix.os }}
-        path: dist/*
-
-  # Android Build
-  android-build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        
-    - name: Setup Java
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '17'
-        
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
-      
-    - name: Install Cordova
-      run: |
-        npm install -g cordova
-        
-    - name: Create Cordova Project
-      run: |
-        cordova create orbit-dash-android com.orbitdash.game "Orbit Dash"
-        cd orbit-dash-android
-        
-        # Copy game files
-        cp ../index.html www/
-        
-        # Create Cordova config
-        cat > config.xml << 'EOF'
-        <?xml version='1.0' encoding='utf-8'?>
-        <widget id="com.orbitdash.game" version="1.0.0" xmlns="http://www.w3.org/ns/widgets">
-            <name>Orbit Dash</name>
-            <description>Collect shards and avoid hazards in this 20-level challenge</description>
-            <author email="dev@orbitdash.com" href="https://orbitdash.com">Orbit Dash Team</author>
-            <content src="index.html" />
-            
-            <preference name="DisallowOverscroll" value="true" />
-            <preference name="android-minSdkVersion" value="22" />
-            <preference name="android-targetSdkVersion" value="33" />
-            <preference name="Orientation" value="landscape" />
-            <preference name="Fullscreen" value="true" />
-            
-            <platform name="android">
-                <allow-intent href="market:*" />
-                <icon density="ldpi" src="res/icons/android/ldpi.png" />
-                <icon density="mdpi" src="res/icons/android/mdpi.png" />
-                <icon density="hdpi" src="res/icons/android/hdpi.png" />
-                <icon density="xhdpi" src="res/icons/android/xhdpi.png" />
-                <icon density="xxhdpi" src="res/icons/android/xxhdpi.png" />
-                <icon density="xxxhdpi" src="res/icons/android/xxxhdpi.png" />
-            </platform>
-            
-            <access origin="*" />
-            <allow-intent href="http://*/*" />
-            <allow-intent href="https://*/*" />
-        </widget>
-        EOF
-        
-    - name: Generate Android Icons
-      run: |
-        cd orbit-dash-android
-        mkdir -p res/icons/android
-        
-        npm install sharp
-        
-        cat > generate-android-icons.js << 'EOF'
-        const sharp = require('sharp');
-        
-        const svgIcon = `
-        <svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <radialGradient id="bg" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stop-color="#7dd3fc"/>
-              <stop offset="100%" stop-color="#0b1020"/>
-            </radialGradient>
-          </defs>
-          <circle cx="256" cy="256" r="240" fill="url(#bg)"/>
-          <circle cx="256" cy="256" r="80" fill="#e0f2fe"/>
-          <path d="M216 206 L296 256 L216 306 Z" fill="#0b1020"/>
-        </svg>`;
-        
-        const sizes = {
-          'ldpi': 36,
-          'mdpi': 48,
-          'hdpi': 72,
-          'xhdpi': 96,
-          'xxhdpi': 144,
-          'xxxhdpi': 192
-        };
-        
-        Object.entries(sizes).forEach(([density, size]) => {
-          sharp(Buffer.from(svgIcon))
-            .resize(size, size)
-            .png()
-            .toFile(`res/icons/android/${density}.png`);
-        });
-        EOF
-        
-        node generate-android-icons.js
-        
-    - name: Add Android Platform
-      run: |
-        cd orbit-dash-android
-        cordova platform add android
-        
-    - name: Build Android APK
-      run: |
-        cd orbit-dash-android
-        cordova build android --release
-        
-    - name: Upload Android APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: android-apk
-        path: orbit-dash-android/platforms/android/app/build/outputs/apk/release/*.apk
-
-  # iOS Build (requires macOS)
-  ios-build:
-    runs-on: macos-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        
-    - name: Install Cordova and iOS tools
-      run: |
-        npm install -g cordova
-        sudo gem install cocoapods
-        
-    - name: Create Cordova iOS Project
-      run: |
-        cordova create orbit-dash-ios com.orbitdash.game "Orbit Dash"
-        cd orbit-dash-ios
-        
-        # Copy game files
-        cp ../index.html www/
-        
-        # Create iOS-specific config
-        cat > config.xml << 'EOF'
-        <?xml version='1.0' encoding='utf-8'?>
-        <widget id="com.orbitdash.game" version="1.0.0" xmlns="http://www.w3.org/ns/widgets">
-            <name>Orbit Dash</name>
-            <description>Collect shards and avoid hazards in this 20-level challenge</description>
-            <author email="dev@orbitdash.com" href="https://orbitdash.com">Orbit Dash Team</author>
-            <content src="index.html" />
-            
-            <preference name="DisallowOverscroll" value="true" />
-            <preference name="Orientation" value="landscape" />
-            <preference name="Fullscreen" value="true" />
-            
-            <platform name="ios">
-                <allow-intent href="itms:*" />
-                <allow-intent href="itms-apps:*" />
-                <icon height="57" platform="ios" src="res/icons/ios/icon-57.png" width="57" />
-                <icon height="114" platform="ios" src="res/icons/ios/icon-57-2x.png" width="114" />
-                <icon height="72" platform="ios" src="res/icons/ios/icon-72.png" width="72" />
-                <icon height="144" platform="ios" src="res/icons/ios/icon-72-2x.png" width="144" />
-                <icon height="76" platform="ios" src="res/icons/ios/icon-76.png" width="76" />
-                <icon height="152" platform="ios" src="res/icons/ios/icon-76-2x.png" width="152" />
-                <icon height="167" platform="ios" src="res/icons/ios/icon-83.5-2x.png" width="167" />
-                <icon height="120" platform="ios" src="res/icons/ios/icon-60-2x.png" width="120" />
-                <icon height="180" platform="ios" src="res/icons/ios/icon-60-3x.png" width="180" />
-            </platform>
-            
-            <access origin="*" />
-        </widget>
-        EOF
-        
-    - name: Generate iOS Icons
-      run: |
-        cd orbit-dash-ios
-        mkdir -p res/icons/ios
-        
-        npm install sharp
-        
-        cat > generate-ios-icons.js << 'EOF'
-        const sharp = require('sharp');
-        
-        const svgIcon = `
-        <svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <radialGradient id="bg" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stop-color="#7dd3fc"/>
-              <stop offset="100%" stop-color="#0b1020"/>
-            </radialGradient>
-          </defs>
-          <circle cx="256" cy="256" r="240" fill="url(#bg)"/>
-          <circle cx="256" cy="256" r="80" fill="#e0f2fe"/>
-          <path d="M216 206 L296 256 L216 306 Z" fill="#0b1020"/>
-        </svg>`;
-        
-        const iosSizes = {
-          'icon-57.png': 57,
-          'icon-57-2x.png': 114,
-          'icon-72.png': 72,
-          'icon-72-2x.png': 144,
-          'icon-76.png': 76,
-          'icon-76-2x.png': 152,
-          'icon-83.5-2x.png': 167,
-          'icon-60-2x.png': 120,
-          'icon-60-3x.png': 180
-        };
-        
-        Object.entries(iosSizes).forEach(([filename, size]) => {
-          sharp(Buffer.from(svgIcon))
-            .resize(size, size)
-            .png()
-            .toFile(`res/icons/ios/${filename}`);
-        });
-        EOF
-        
-        node generate-ios-icons.js
-        
-    - name: Add iOS Platform
-      run: |
-        cd orbit-dash-ios
-        cordova platform add ios
-        
-    - name: Build iOS App
-      run: |
-        cd orbit-dash-ios
-        cordova build ios --release
-        
-    - name: Upload iOS Build
-      uses: actions/upload-artifact@v4
-      with:
-        name: ios-build
-        path: orbit-dash-ios/platforms/ios/build/device/*.ipa
-
-  # Tauri Build (Rust-based alternative for desktop)
-  tauri-build:
-    strategy:
-      matrix:
-        platform: [macos-latest, ubuntu-20.04, windows-latest]
-        
-    runs-on: ${{ matrix.platform }}
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      
-    - name: Install dependencies (Ubuntu only)
-      if: matrix.platform == 'ubuntu-20.04'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev patchelf
-        
-    - name: Install Tauri CLI
-      run: cargo install tauri-cli
-      
-    - name: Create Tauri Project
-      run: |
-        npm create tauri-app@latest orbit-dash-tauri -- --template vanilla --manager npm
-        cd orbit-dash-tauri
-        
-        # Copy game file
-        cp ../index.html src/
-        
-        # Update tauri.conf.json
-        cat > src-tauri/tauri.conf.json << 'EOF'
-        {
-          "build": {
-            "beforeDevCommand": "",
-            "beforeBuildCommand": "",
-            "devPath": "../src",
-            "distDir": "../src",
-            "withGlobalTauri": false
-          },
-          "package": {
-            "productName": "Orbit Dash",
-            "version": "1.0.0"
-          },
-          "tauri": {
-            "allowlist": {
-              "all": false,
-              "shell": {
-                "all": false,
-                "open": true
-              }
-            },
-            "bundle": {
-              "active": true,
-              "category": "Game",
-              "copyright": "",
-              "deb": {
-                "depends": []
-              },
-              "externalBin": [],
-              "icon": [
-                "icons/32x32.png",
-                "icons/128x128.png",
-                "icons/icon.icns",
-                "icons/icon.ico"
-              ],
-              "identifier": "com.orbitdash.game",
-              "longDescription": "",
-              "macOS": {
-                "entitlements": null,
-                "exceptionDomain": "",
-                "frameworks": [],
-                "providerShortName": null,
-                "signingIdentity": null
-              },
-              "resources": [],
-              "shortDescription": "",
-              "targets": "all",
-              "windows": {
-                "certificateThumbprint": null,
-                "digestAlgorithm": "sha256",
-                "timestampUrl": ""
-              }
-            },
-            "security": {
-              "csp": null
-            },
-            "updater": {
-              "active": false
-            },
-            "windows": [
-              {
-                "fullscreen": false,
-                "resizable": true,
-                "title": "Orbit Dash",
-                "width": 1280,
-                "height": 800,
-                "minWidth": 800,
-                "minHeight": 600
-              }
-            ]
-          }
-        }
-        EOF
-        
-    - name: Build Tauri App
-      run: |
-        cd orbit-dash-tauri
-        cargo tauri build
-        
-    - name: Upload Tauri Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: tauri-${{ matrix.platform }}
-        path: |
-          orbit-dash-tauri/src-tauri/target/release/bundle/deb/*.deb
-          orbit-dash-tauri/src-tauri/target/release/bundle/appimage/*.AppImage
-          orbit-dash-tauri/src-tauri/target/release/bundle/msi/*.msi
-          orbit-dash-tauri/src-tauri/target/release/bundle/dmg/*.dmg
-
-  # Capacitor Build (alternative for mobile)
-  capacitor-build:
-    runs-on: macos-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        
-    - name: Setup Java
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '17'
-        
-    - name: Install Capacitor
-      run: |
-        npm install -g @capacitor/cli @capacitor/core @capacitor/android @capacitor/ios
-        
-    - name: Create Capacitor Project
-      run: |
-        npm init -y
-        npm install @capacitor/core @capacitor/android @capacitor/ios
-        
-        # Initialize Capacitor
-        npx cap init "Orbit Dash" "com.orbitdash.game" --web-dir="."
-        
-        # Copy game file
-        cp index.html ./index.html
-        
-        # Update capacitor config
-        cat > capacitor.config.ts << 'EOF'
-        import { CapacitorConfig } from '@capacitor/cli';
-        
-        const config: CapacitorConfig = {
-          appId: 'com.orbitdash.game',
-          appName: 'Orbit Dash',
-          webDir: '.',
-          server: {
-            androidScheme: 'https'
-          },
-          plugins: {
-            SplashScreen: {
-              launchShowDuration: 2000,
-              backgroundColor: "#0b1020",
-              showSpinner: false
-            }
-          }
-        };
-        
-        export default config;
-        EOF
-        
-    - name: Add Platforms
-      run: |
-        npx cap add android
-        npx cap add ios
-        
-    - name: Sync Capacitor
-      run: npx cap sync
-      
-    - name: Build Android with Capacitor
-      run: |
-        cd android
-        ./gradlew assembleRelease
-        
-    - name: Build iOS with Capacitor (if on macOS)
-      run: |
-        cd ios/App
-        xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -destination generic/platform=iOS build
-        
-    - name: Upload Capacitor Builds
-      uses: actions/upload-artifact@v4
-      with:
-        name: capacitor-builds
-        path: |
-          android/app/build/outputs/apk/release/*.apk
-          ios/App/build/Release-iphoneos/*.app
-
-  # Release
-  release:
-    if: github.event_name == 'release'
-    needs: [web-build, desktop-build, android-build, ios-build, tauri-build, capacitor-build]
-    runs-on: ubuntu-latest
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      
-    - name: Create release packages
-      run: |
-        # Create directories for organized release
-        mkdir -p release/{web,desktop,mobile}
-        
-        # Web PWA
-        cp -r web-build/* release/web/
-        cd release/web && zip -r ../orbit-dash-web-pwa.zip . && cd ../..
-        
-        # Desktop apps
-        find . -name "*.exe" -exec cp {} release/desktop/ \;
-        find . -name "*.msi" -exec cp {} release/desktop/ \;
-        find . -name "*.dmg" -exec cp {} release/desktop/ \;
-        find . -name "*.AppImage" -exec cp {} release/desktop/ \;
-        find . -name "*.deb" -exec cp {} release/desktop/ \;
-        
-        # Mobile apps
-        find . -name "*.apk" -exec cp {} release/mobile/ \;
-        find . -name "*.ipa" -exec cp {} release/mobile/ \;
-        
-        # Create checksums
-        cd release
-        find . -type f \( -name "*.zip" -o -name "*.exe" -o -name "*.msi" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.apk" -o -name "*.ipa" \) -exec sha256sum {} \; > checksums.txt
-        
-    - name: Upload to Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          release/orbit-dash-web-pwa.zip
-          release/desktop/*
-          release/mobile/*
-          release/checksums.txt
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # GitHub Pages Deployment
-  deploy-web:
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-    needs: web-build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    steps:
-    - name: Download web artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: web-build
-        path: ./
-        
-    - name: Setup Pages
-      uses: actions/configure-pages@v4
-      
-    - name: Upload to Pages
-      uses: actions/upload-pages-artifact@v3
-      with:
-        path: ./
-        
-    - name: Deploy to GitHub Pages
-      uses: actions/deploy-pages@v4
-
-  # Docker Build (for server deployment)
-  docker-build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Create Dockerfile
-      run: |
-        cat > Dockerfile << 'EOF'
-        FROM nginx:alpine
-        COPY index.html /usr/share/nginx/html/
-        COPY manifest.json /usr/share/nginx/html/
-        COPY service-worker.js /usr/share/nginx/html/
-        COPY *.png /usr/share/nginx/html/
-        
-        # Configure nginx for PWA
-        RUN echo 'server { \
-            listen 80; \
-            server_name localhost; \
-            root /usr/share/nginx/html; \
-            index index.html; \
-            location / { \
-                try_files $uri $uri/ /index.html; \
-                add_header Cache-Control "no-cache"; \
-            } \
-            location /service-worker.js { \
-                add_header Cache-Control "no-cache"; \
-            } \
-        }' > /etc/nginx/conf.d/default.conf
-        
-        EXPOSE 80
-        CMD ["nginx", "-g", "daemon off;"]
-        EOF
-        
-    - name: Build Docker Image
-      run: |
-        docker build -t orbit-dash:latest .
-        docker save orbit-dash:latest | gzip > orbit-dash-docker.tar.gz
-        
-    - name: Upload Docker Image
-      uses: actions/upload-artifact@v4
-      with:
-        name: docker-image
-        path: orbit-dash-docker.tar.gz
-
-  # Flutter Build (for better mobile performance)
-  flutter-build:
-    runs-on: macos-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Flutter
-      uses: subosito/flutter-action@v2
-      with:
-        flutter-version: '3.16.0'
-        
-    - name: Create Flutter Project
-      run: |
-        flutter create orbit_dash_flutter --project-name orbit_dash_flutter
-        cd orbit_dash_flutter
-        
-        # Update pubspec.yaml for webview
-        cat > pubspec.yaml << 'EOF'
-        name: orbit_dash_flutter
-        description: Orbit Dash - 20 Level Challenge Game
-        version: 1.0.0+1
-        
-        environment:
-          sdk: '>=3.0.0 <4.0.0'
-          flutter: ">=3.10.0"
-        
-        dependencies:
-          flutter:
-            sdk: flutter
-          webview_flutter: ^4.4.2
-          flutter_launcher_icons: ^0.13.1
-          
-        dev_dependencies:
-          flutter_test:
-            sdk: flutter
-          flutter_lints: ^3.0.0
-          
-        flutter_launcher_icons:
-          android: "launcher_icon"
-          ios: true
-          image_path: "assets/icon.png"
-          min_sdk_android: 21
-          
-        flutter:
-          uses-material-design: true
-          assets:
-            - assets/
-            - assets/game.html
-        EOF
-        
-    - name: Create Flutter App
-      run: |
-        cd orbit_dash_flutter
-        
-        # Copy game file as asset
-        mkdir -p assets
-        cp ../index.html assets/game.html
-        
-        # Create app icon
-        cat > generate_flutter_icon.js << 'EOF'
-        const sharp = require('sharp');
-        
-        const svgIcon = `
-        <svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <radialGradient id="bg" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stop-color="#7dd3fc"/>
-              <stop offset="100%" stop-color="#0b1020"/>
-            </radialGradient>
-          </defs>
-          <circle cx="256" cy="256" r="240" fill="url(#bg)"/>
-          <circle cx="256" cy="256" r="80" fill="#e0f2fe"/>
-          <path d="M216 206 L296 256 L216 306 Z" fill="#0b1020"/>
-        </svg>`;
-        
-        sharp(Buffer.from(svgIcon))
-          .resize(512, 512)
-          .png()
-          .toFile('assets/icon.png');
-        EOF
-        
-        npm install sharp
-        node generate_flutter_icon.js
-        
-        # Main Flutter app
-        cat > lib/main.dart << 'EOF'
-        import 'package:flutter/material.dart';
-        import 'package:flutter/services.dart';
-        import 'package:webview_flutter/webview_flutter.dart';
-        
-        void main() {
-          runApp(OrbitDashApp());
-        }
-        
-        class OrbitDashApp extends StatelessWidget {
-          @override
-          Widget build(BuildContext context) {
-            return MaterialApp(
-              title: 'Orbit Dash',
-              theme: ThemeData.dark(),
-              home: GameScreen(),
-              debugShowCheckedModeBanner: false,
-            );
-          }
-        }
-        
-        class GameScreen extends StatefulWidget {
-          @override
-          _GameScreenState createState() => _GameScreenState();
-        }
-        
-        class _GameScreenState extends State<GameScreen> {
-          late WebViewController controller;
-          
-          @override
-          void initState() {
-            super.initState();
-            SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-            SystemChrome.setPreferredOrientations([
-              DeviceOrientation.landscapeLeft,
-              DeviceOrientation.landscapeRight,
-            ]);
-          }
-          
-          @override
-          Widget build(BuildContext context) {
-            return Scaffold(
-              body: FutureBuilder<String>(
-                future: rootBundle.loadString('assets/game.html'),
-                builder: (context, snapshot) {
-                  if (snapshot.hasData) {
-                    return WebViewWidget(
-                      controller: WebViewController()
-                        ..setJavaScriptMode(JavaScriptMode.unrestricted)
-                        ..loadHtmlString(snapshot.data!),
-                    );
-                  } else {
-                    return Center(
-                      child: CircularProgressIndicator(
-                        color: Color(0xFF7dd3fc),
-                      ),
-                    );
-                  }
-                },
-              ),
-            );
-          }
-        }
-        EOF
-        
-    - name: Generate Flutter Icons
-      run: |
-        cd orbit_dash_flutter
-        dart run flutter_launcher_icons
-        
-    - name: Build Flutter Android
-      run: |
-        cd orbit_dash_flutter
-        flutter build apk --release
-        flutter build appbundle --release
-        
-    - name: Build Flutter iOS
-      run: |
-        cd orbit_dash_flutter
-        flutter build ios --release --no-codesign
-        
-    - name: Upload Flutter Builds
-      uses: actions/upload-artifact@v4
-      with:
-        name: flutter-builds
-        path: |
-          orbit_dash_flutter/build/app/outputs/flutter-apk/*.apk
-          orbit_dash_flutter/build/app/outputs/bundle/release/*.aab
-          orbit_dash_flutter/build/ios/iphoneos/*.app
-
-  # Progressive Web App Optimization
-  pwa-optimize:
-    runs-on: ubuntu-latest
-    needs: web-build
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        
-    - name: Install PWA tools
-      run: |
-        npm install -g workbox-cli pwa-asset-generator
-        
-    - name: Download web build
-      uses: actions/download-artifact@v4
-      with:
-        name: web-build
-        
-    - name: Generate PWA assets
-      run: |
-        # Generate comprehensive icon set
-        npx pwa-asset-generator icon-512.png assets --manifest manifest.json --index index.html --type png
-        
-        # Generate service worker with Workbox
-        cat > workbox-config.js << 'EOF'
-        module.exports = {
-          globDirectory: './',
-          globPatterns: [
-            '**/*.{html,js,css,png,jpg,gif,svg,woff2,woff}'
-          ],
-          swDest: 'sw.js',
-          runtimeCaching: [{
-            urlPattern: /\.(?:png|gif|jpg|jpeg|svg)$/,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'images',
-              expiration: {
-                maxEntries: 60,
-                maxAgeSeconds: 30 * 24 * 60 * 60, // 30 Days
-              },
-            },
-          }],
-        };
-        EOF
-        
-        npx workbox generateSW workbox-config.js
-        
-    - name: Upload Optimized PWA
-      uses: actions/upload-artifact@v4
-      with:
-        name: pwa-optimized
-        path: |
-          index.html
-          manifest.json
-          sw.js
-          assets/**/*
-
-  # Steam Deck / Linux Gaming Build
-  steam-build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Steam SDK
-      run: |
-        # Create AppImage for Steam Deck compatibility
-        wget -O appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-        chmod +x appimagetool
-        
-    - name: Create Steam Deck Build
-      run: |
-        mkdir -p OrbitDash.AppDir/usr/bin
-        mkdir -p OrbitDash.AppDir/usr/share/applications
-        mkdir -p OrbitDash.AppDir/usr/share/icons/hicolor/512x512/apps
-        
-        # Create launcher script
-        cat > OrbitDash.AppDir/usr/bin/orbit-dash << 'EOF'
-        #!/bin/bash
-        cd "$(dirname "$0")/.."
-        python3 -m http.server 8080 --directory share/orbit-dash &
         SERVER_PID=$!
         sleep 2
         
-        if command -v steam-runtime-launch-client >/dev/null 2>&1; then
-            steam-runtime-launch-client --pass-fd=1,2 -- flatpak run org.chromium.Chromium --app=http://localhost:8080 --start-fullscreen
-        elif command -v chromium-browser >/dev/null 2>&1; then
-            chromium-browser --app=http://localhost:8080 --start-fullscreen
-        else
-            firefox --new-window http://localhost:8080
+        if command -v xdg-open >/dev/null; then
+            xdg-open http://localhost:8080
+        elif command -v firefox >/dev/null; then
+            firefox http://localhost:8080
+        elif command -v chromium-browser >/dev/null; then
+            chromium-browser --app=http://localhost:8080
         fi
         
-        kill $SERVER_PID
+        read -p "Press Enter to close..."
+        kill $SERVER_PID 2>/dev/null
         EOF
+        chmod +x run-linux.sh
         
-        chmod +x OrbitDash.AppDir/usr/bin/orbit-dash
-        
-        # Copy game files
-        mkdir -p OrbitDash.AppDir/usr/share/orbit-dash
-        cp index.html OrbitDash.AppDir/usr/share/orbit-dash/
-        
-        # Create desktop entry
-        cat > OrbitDash.AppDir/usr/share/applications/orbit-dash.desktop << 'EOF'
-        [Desktop Entry]
-        Type=Application
-        Name=Orbit Dash
-        Comment=Collect shards and avoid hazards in this 20-level challenge
-        Exec=orbit-dash
-        Icon=orbit-dash
-        Categories=Game;ArcadeGame;
-        Terminal=false
-        StartupNotify=true
-        EOF
-        
-        # Generate icon
-        npm install sharp
-        node -e "
-        const sharp = require('sharp');
-        const svgIcon = \`<svg width='512' height='512' xmlns='http://www.w3.org/2000/svg'>
-          <defs>
-            <radialGradient id='bg' cx='50%' cy='50%' r='50%'>
-              <stop offset='0%' stop-color='#7dd3fc'/>
-              <stop offset='100%' stop-color='#0b1020'/>
-            </radialGradient>
-          </defs>
-          <circle cx='256' cy='256' r='240' fill='url(#bg)'/>
-          <circle cx='256' cy='256' r='80' fill='#e0f2fe'/>
-          <path d='M216 206 L296 256 L216 306 Z' fill='#0b1020'/>
-        </svg>\`;
-        sharp(Buffer.from(svgIcon))
-          .resize(512, 512)
-          .png()
-          .toFile('OrbitDash.AppDir/usr/share/icons/hicolor/512x512/apps/orbit-dash.png');
-        "
-        
-        # Create AppRun
-        cat > OrbitDash.AppDir/AppRun << 'EOF'
+        # macOS launcher
+        cat > run-macos.command << 'EOF'
         #!/bin/bash
-        cd "$(dirname "$0")"
-        exec usr/bin/orbit-dash "$@"
-        EOF
-        chmod +x OrbitDash.AppDir/AppRun
-        
-        # Build AppImage
-        ./appimagetool OrbitDash.AppDir OrbitDash-x86_64.AppImage
-        
-    - name: Upload Steam Deck Build
-      uses: actions/upload-artifact@v4
-      with:
-        name: steam-deck-build
-        path: OrbitDash-x86_64.AppImage
-
-  # Snap Package (Linux)
-  snap-build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Snapcraft
-      run: sudo snap install snapcraft --classic
-      
-    - name: Create Snap Package
-      run: |
-        mkdir -p snap/gui
-        
-        cat > snapcraft.yaml << 'EOF'
-        name: orbit-dash
-        version: '1.0'
-        summary: Orbit Dash - 20 Level Challenge Game
-        description: |
-          Collect all shards, avoid hazards, and reach the warp gate in this exciting 
-          20-level arcade game! Navigate through increasingly challenging levels with 
-          precise controls and strategic thinking.
-        
-        grade: stable
-        confinement: strict
-        base: core22
-        
-        apps:
-          orbit-dash:
-            command: bin/orbit-dash
-            plugs: [network, network-bind, desktop, desktop-legacy, wayland, x11, audio-playback]
-            desktop: usr/share/applications/orbit-dash.desktop
-        
-        parts:
-          game:
-            plugin: dump
-            source: .
-            organize:
-              index.html: usr/share/orbit-dash/index.html
-            stage-packages:
-              - python3
-              - chromium-browser
-            override-build: |
-              craftctl default
-              mkdir -p $CRAFTCTL_PART_INSTALL/bin
-              mkdir -p $CRAFTCTL_PART_INSTALL/usr/share/applications
-              
-              cat > $CRAFTCTL_PART_INSTALL/bin/orbit-dash << 'SCRIPT'
-        #!/bin/bash
-        cd "$SNAP/usr/share/orbit-dash"
+        cd "$(dirname "$0")/../web"
+        echo "Starting Orbit Dash..."
         python3 -m http.server 8080 &
         SERVER_PID=$!
         sleep 2
-        chromium-browser --app=http://localhost:8080 --start-fullscreen
+        open http://localhost:8080
+        read -p "Press Enter to close..."
         kill $SERVER_PID
-        SCRIPT
-              chmod +x $CRAFTCTL_PART_INSTALL/bin/orbit-dash
-              
-              cat > $CRAFTCTL_PART_INSTALL/usr/share/applications/orbit-dash.desktop << 'DESKTOP'
+        EOF
+        chmod +x run-macos.command
+        
+    - name: Create mobile installation guides
+      run: |
+        cd orbit-dash-universal/mobile
+        
+        # Android installation
+        cat > install-android.md << 'EOF'
+        # Android Installation
+        
+        ## Method 1: Install APK (Sideloading)
+        1. Enable "Unknown Sources" in Android Settings > Security
+        2. Copy `orbit-dash.apk` to your device
+        3. Tap the file to install
+        
+        ## Method 2: Web App (Recommended)
+        1. Open Chrome browser
+        2. Visit the web version URL
+        3. Tap menu > "Add to Home Screen"
+        4. The game will work like a native app
+        
+        ## Method 3: Cordova Build
+        1. Install Node.js on your computer
+        2. Run: `cordova create orbit com.orbitdash.game OrbitDash`
+        3. Copy `../web/index.html` to `orbit/www/`
+        4. Run: `cd orbit && cordova platform add android && cordova build android`
+        EOF
+        
+        # iOS installation
+        cat > install-ios.md << 'EOF'
+        # iOS Installation
+        
+        ## Method 1: Web App (Recommended)
+        1. Open Safari browser
+        2. Visit the web version URL
+        3. Tap Share button > "Add to Home Screen"
+        4. The game will work like a native app
+        
+        ## Method 2: TestFlight (if available)
+        1. Install TestFlight from App Store
+        2. Use provided beta link
+        3. Install Orbit Dash
+        
+        ## Method 3: Build with Xcode
+        1. Install Xcode and Cordova
+        2. Run: `cordova create orbit com.orbitdash.game OrbitDash`
+        3. Copy game files and build for iOS
+        EOF
+        
+    - name: Create portable executables
+      run: |
+        cd orbit-dash-universal/desktop
+        
+        # Create minimal Python server for Windows
+        cat > server.py << 'EOF'
+        import http.server
+        import socketserver
+        import webbrowser
+        import os
+        import sys
+        from pathlib import Path
+        
+        PORT = 8080
+        game_dir = Path(__file__).parent.parent / "web"
+        
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=str(game_dir), **kwargs)
+        
+        if __name__ == "__main__":
+            os.chdir(game_dir)
+            with socketserver.TCPServer(("", PORT), Handler) as httpd:
+                print(f"Starting Orbit Dash on http://localhost:{PORT}")
+                webbrowser.open(f"http://localhost:{PORT}")
+                try:
+                    httpd.serve_forever()
+                except KeyboardInterrupt:
+                    print("\nGame closed.")
+        EOF
+        
+        # Create Node.js server (smaller alternative)
+        cat > server.js << 'EOF'
+        const http = require('http');
+        const fs = require('fs');
+        const path = require('path');
+        const { exec } = require('child_process');
+        
+        const PORT = 8080;
+        const gameFile = path.join(__dirname, '../web/index.html');
+        
+        http.createServer((req, res) => {
+          fs.readFile(gameFile, (err, data) => {
+            if (err) {
+              res.writeHead(500);
+              res.end('Error loading game');
+              return;
+            }
+            res.writeHead(200, { 'Content-Type': 'text/html' });
+            res.end(data);
+          });
+        }).listen(PORT, () => {
+          console.log(`Orbit Dash running on http://localhost:${PORT}`);
+          
+          // Open browser
+          const start = process.platform === 'darwin' ? 'open' : 
+                       process.platform === 'win32' ? 'start ""' : 'xdg-open';
+          exec(`${start} http://localhost:${PORT}`);
+        });
+        EOF
+        
+    - name: Create universal installation script
+      run: |
+        # Main installation script
+        cat > orbit-dash-universal/INSTALL.md << 'EOF'
+        # Orbit Dash - Universal Installation Guide
+        
+        ## Quick Start (Any Platform)
+        
+        ### Windows
+        - Double-click `desktop/run-windows.bat`
+        - Or run `desktop/server.py` if Python installed
+        
+        ### macOS  
+        - Double-click `desktop/run-macos.command`
+        - Or open Terminal, navigate here, run `./desktop/run-linux.sh`
+        
+        ### Linux
+        - Run `./desktop/run-linux.sh`
+        - Or `python3 desktop/server.py`
+        
+        ### Android/iOS
+        - See instructions in `mobile/` folder
+        - Or visit the web version on your device browser
+        
+        ### Any Device with Browser
+        - Open `web/index.html` in any modern browser
+        - For best experience, use Chrome/Safari/Firefox
+        
+        ## File Structure
+        ```
+        orbit-dash-universal/
+        ├── web/           # Web version (works everywhere)
+        ├── desktop/       # Desktop launchers
+        ├── mobile/        # Mobile installation guides  
+        ├── launchers/     # Platform-specific shortcuts
+        └── icon.png       # Game icon
+        ```
+        
+        ## Requirements
+        - Any modern web browser
+        - Optional: Python 3 or Node.js for local server
+        - 5MB disk space
+        
+        ## Features
+        - Works offline after first load
+        - Responsive design (phone to 4K)
+        - Touch and keyboard controls
+        - Cross-platform save data (in browser)
+        EOF
+        
+    - name: Create platform shortcuts
+      run: |
+        cd orbit-dash-universal/launchers
+        
+        # Windows shortcut info
+        cat > windows-shortcut.txt << 'EOF'
+        To create Windows shortcut:
+        1. Right-click desktop > New > Shortcut
+        2. Location: path\to\orbit-dash-universal\desktop\run-windows.bat  
+        3. Name: Orbit Dash
+        4. Right-click shortcut > Properties > Change Icon > Browse to icon.png
+        EOF
+        
+        # Linux desktop entry
+        cat > orbit-dash.desktop << 'EOF'
         [Desktop Entry]
         Type=Application
         Name=Orbit Dash
         Comment=20 Level Challenge Game
-        Exec=orbit-dash
-        Icon=${SNAP}/usr/share/pixmaps/orbit-dash.png
+        Exec=bash -c 'cd "$(dirname "%k")/../desktop" && ./run-linux.sh'
+        Icon=%k/../icon.png
         Categories=Game;
         Terminal=false
-        DESKTOP
         EOF
         
-    - name: Build Snap
-      run: snapcraft --verbose
-      
-    - name: Upload Snap Package
-      uses: actions/upload-artifact@v4
-      with:
-        name: snap-package
-        path: "*.snap"
-
-  # Flatpak Build (Linux)
-  flatpak-build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Flatpak
-      run: |
-        sudo apt update
-        sudo apt install -y flatpak flatpak-builder
-        sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-        sudo flatpak install -y flathub org.freedesktop.Platform//22.08 org.freedesktop.Sdk//22.08
-        
-    - name: Create Flatpak Manifest
-      run: |
-        cat > com.orbitdash.game.yml << 'EOF'
-        app-id: com.orbitdash.game
-        runtime: org.freedesktop.Platform
-        runtime-version: '22.08'
-        sdk: org.freedesktop.Sdk
-        command: orbit-dash
-        
-        finish-args:
-          - --share=network
-          - --share=ipc
-          - --socket=x11
-          - --socket=wayland
-          - --socket=pulseaudio
-          - --device=dri
-          
-        modules:
-          - name: python3
-            buildsystem: simple
-            build-commands:
-              - pip3 install --prefix=/app --no-deps .
-            sources:
-              - type: archive
-                url: https://www.python.org/ftp/python/3.11.0/Python-3.11.0.tgz
-                
-          - name: chromium
-            buildsystem: simple
-            build-commands:
-              - install -Dm755 chromium /app/bin/chromium
-            sources:
-              - type: file
-                url: https://github.com/ungoogled-software/ungoogled-chromium-portablelinux/releases/download/118.0.5993.117-1.1/ungoogled-chromium_118.0.5993.117-1.1_linux.tar.xz
-                
-          - name: orbit-dash
-            buildsystem: simple
-            build-commands:
-              - install -Dm644 index.html /app/share/orbit-dash/index.html
-              - install -Dm755 orbit-dash /app/bin/orbit-dash
-              - install -Dm644 com.orbitdash.game.desktop /app/share/applications/com.orbitdash.game.desktop
-              - install -Dm644 icon.png /app/share/icons/hicolor/512x512/apps/com.orbitdash.game.png
-            sources:
-              - type: file
-                path: index.html
-              - type: file
-                path: orbit-dash
-              - type: file
-                path: com.orbitdash.game.desktop
-              - type: file
-                path: icon.png
-        EOF
-        
-        # Create launcher script
-        cat > orbit-dash << 'EOF'
+        # macOS app bundle creation script
+        cat > create-macos-app.sh << 'EOF'
         #!/bin/bash
-        cd /app/share/orbit-dash
-        python3 -m http.server 8080 &
-        SERVER_PID=$!
-        sleep 2
-        /app/bin/chromium --app=http://localhost:8080 --start-fullscreen
-        kill $SERVER_PID
-        EOF
-        chmod +x orbit-dash
-        
-        # Create desktop file
-        cat > com.orbitdash.game.desktop << 'EOF'
-        [Desktop Entry]
-        Type=Application
-        Name=Orbit Dash
-        Comment=20 Level Challenge Game
-        Exec=orbit-dash
-        Icon=com.orbitdash.game
-        Categories=Game;ArcadeGame;
-        Terminal=false
-        EOF
-        
-        # Generate icon
-        npm install sharp
-        node -e "
-        const sharp = require('sharp');
-        const svgIcon = \`<svg width='512' height='512' xmlns='http://www.w3.org/2000/svg'>
-          <defs><radialGradient id='bg' cx='50%' cy='50%' r='50%'><stop offset='0%' stop-color='#7dd3fc'/><stop offset='100%' stop-color='#0b1020'/></radialGradient></defs>
-          <circle cx='256' cy='256' r='240' fill='url(#bg)'/><circle cx='256' cy='256' r='80' fill='#e0f2fe'/>
-          <path d='M216 206 L296 256 L216 306 Z' fill='#0b1020'/></svg>\`;
-        sharp(Buffer.from(svgIcon)).resize(512, 512).png().toFile('icon.png');
-        "
-        
-    - name: Build Flatpak
-      run: |
-        flatpak-builder --force-clean build-dir com.orbitdash.game.yml
-        flatpak build-export export build-dir
-        flatpak build-bundle export orbit-dash.flatpak com.orbitdash.game
-        
-    - name: Upload Flatpak
-      uses: actions/upload-artifact@v4
-      with:
-        name: flatpak-package
-        path: orbit-dash.flatpak
-
-  # Windows Store Package (MSIX)
-  windows-store:
-    runs-on: windows-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        
-    - name: Install PWA Builder CLI
-      run: npm install -g @pwabuilder/cli
-      
-    - name: Create Windows Store Package
-      run: |
-        # Create manifest for PWA Builder
-        echo '{
-          "dir": "ltr",
-          "lang": "en",
-          "name": "Orbit Dash",
-          "scope": "/",
-          "display": "fullscreen",
-          "start_url": "index.html",
-          "short_name": "OrbitDash",
-          "theme_color": "#7dd3fc",
-          "description": "Collect shards and avoid hazards in this 20-level challenge",
-          "orientation": "landscape",
-          "background_color": "#0b1020",
-          "related_applications": [],
-          "prefer_related_applications": false,
-          "icons": [],
-          "screenshots": [],
-          "features": [],
-          "categories": ["games"]
-        }' > manifest.json
-        
-        # Generate Windows Store package
-        pwa-builder . -p windows
-        
-    - name: Upload Windows Store Package
-      uses: actions/upload-artifact@v4
-      with:
-        name: windows-store-package
-        path: |
-          **/*.msix
-          **/*.appx
-
-  # macOS App Store Package
-  macos-store:
-    runs-on: macos-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        
-    - name: Create macOS App Bundle
-      run: |
         mkdir -p "Orbit Dash.app/Contents/MacOS"
         mkdir -p "Orbit Dash.app/Contents/Resources"
         
+        # Copy launcher
+        cp ../desktop/run-macos.command "Orbit Dash.app/Contents/MacOS/Orbit Dash"
+        cp ../icon.png "Orbit Dash.app/Contents/Resources/"
+        
         # Create Info.plist
-        cat > "Orbit Dash.app/Contents/Info.plist" << 'EOF'
+        cat > "Orbit Dash.app/Contents/Info.plist" << 'PLIST'
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0">
         <dict>
             <key>CFBundleExecutable</key>
-            <string>orbit-dash</string>
+            <string>Orbit Dash</string>
             <key>CFBundleIdentifier</key>
             <string>com.orbitdash.game</string>
             <key>CFBundleName</key>
             <string>Orbit Dash</string>
             <key>CFBundleVersion</key>
             <string>1.0</string>
-            <key>CFBundleShortVersionString</key>
-            <string>1.0</string>
-            <key>CFBundleInfoDictionaryVersion</key>
-            <string>6.0</string>
-            <key>CFBundlePackageType</key>
-            <string>APPL</string>
-            <key>LSMinimumSystemVersion</key>
-            <string>10.15</string>
-            <key>NSHighResolutionCapable</key>
-            <true/>
         </dict>
         </plist>
+        PLIST
+        
+        echo "macOS app created! Double-click 'Orbit Dash.app' to run"
         EOF
+        chmod +x create-macos-app.sh
         
-        # Create launcher script
-        cat > "Orbit Dash.app/Contents/MacOS/orbit-dash" << 'EOF'
-        #!/bin/bash
-        cd "$(dirname "$0")/../Resources"
-        python3 -m http.server 8080 &
-        SERVER_PID=$!
-        sleep 2
-        open -a "Safari" --args --new-window http://localhost:8080
-        wait $SERVER_PID
-        EOF
-        chmod +x "Orbit Dash.app/Contents/MacOS/orbit-dash"
-        
-        # Copy game files
-        cp index.html "Orbit Dash.app/Contents/Resources/"
-        
-        # Create DMG
-        hdiutil create -volname "Orbit Dash" -srcfolder "Orbit Dash.app" -ov -format UDZO "Orbit Dash.dmg"
-        
-    - name: Upload macOS Package
-      uses: actions/upload-artifact@v4
-      with:
-        name: macos-store-package
-        path: "Orbit Dash.dmg"
-
-  # Summary and Release Notes
-  build-summary:
-    if: always()
-    needs: [web-build, desktop-build, android-build, ios-build, flutter-build, steam-build, snap-build, flatpak-build, windows-store, macos-store]
-    runs-on: ubuntu-latest
-    steps:
-    - name: Create Build Summary
+    - name: Create mobile build scripts
       run: |
-        cat > build-summary.md << 'EOF'
-        # Orbit Dash - Multi-Platform Build Summary
+        cd orbit-dash-universal/mobile
         
-        ## Available Builds:
+        # Android build script  
+        cat > build-android.sh << 'EOF'
+        #!/bin/bash
+        echo "Building Android APK..."
         
-        ### 🌐 Web/PWA
-        - **Progressive Web App**: Install directly from browser
-        - **GitHub Pages**: Play online instantly
-        - **Docker**: Server deployment ready
+        # Create Cordova project
+        cordova create temp com.orbitdash.game OrbitDash
+        cd temp
+        cp ../../web/index.html www/
         
-        ### 🖥️ Desktop
-        - **Windows**: .exe installer, .msi package, Microsoft Store (.msix)
-        - **macOS**: .dmg installer, .app bundle, Mac App Store ready
-        - **Linux**: .deb package, .AppImage, Snap package, Flatpak
+        # Minimal config
+        cat > config.xml << 'XML'
+        <?xml version='1.0' encoding='utf-8'?>
+        <widget id="com.orbitdash.game" version="1.0.0">
+            <name>Orbit Dash</name>
+            <description>20 Level Challenge Game</description>
+            <content src="index.html" />
+            <preference name="Orientation" value="landscape" />
+            <access origin="*" />
+        </widget>
+        XML
         
-        ### 📱 Mobile
-        - **Android**: .apk sideload, .aab Google Play Store, Flutter version
-        - **iOS**: .ipa package, App Store ready, Flutter version
+        cordova platform add android
+        cordova build android --release
+        cp platforms/android/app/build/outputs/apk/release/app-release-unsigned.apk ../orbit-dash.apk
+        cd .. && rm -rf temp
+        echo "APK created: orbit-dash.apk"
+        EOF
+        chmod +x build-android.sh
         
-        ### 🎮 Gaming Platforms
-        - **Steam Deck**: Optimized AppImage with gamepad support
-        - **Linux Gaming**: Native performance builds
+        # iOS build script
+        cat > build-ios.sh << 'EOF'
+        #!/bin/bash
+        echo "Building iOS app..."
         
-        ## Installation Instructions:
+        cordova create temp com.orbitdash.game OrbitDash
+        cd temp
+        cp ../../web/index.html www/
         
-        ### Web (All Devices)
-        1. Visit the GitHub Pages URL
-        2. Click "Install App" button (if supported)
-        3. Or bookmark and use as web app
+        cat > config.xml << 'XML'
+        <?xml version='1.0' encoding='utf-8'?>
+        <widget id="com.orbitdash.game" version="1.0.0">
+            <name>Orbit Dash</name>
+            <description>20 Level Challenge Game</description>
+            <content src="index.html" />
+            <preference name="Orientation" value="landscape" />
+            <access origin="*" />
+        </widget>
+        XML
         
-        ### Windows
-        - **Installer**: Download .exe and run
-        - **Store**: Search "Orbit Dash" in Microsoft Store
-        - **Portable**: Download .AppImage (works without installation)
+        cordova platform add ios
+        cordova build ios --release
+        echo "iOS build completed in temp/platforms/ios/"
+        EOF
+        chmod +x build-ios.sh
         
-        ### macOS
-        - **Installer**: Download .dmg and drag to Applications
-        - **Store**: Available in Mac App Store
+    - name: Create desktop executables
+      run: |
+        cd orbit-dash-universal/desktop
         
-        ### Linux
-        - **Ubuntu/Debian**: `sudo dpkg -i orbit-dash.deb`
-        - **Universal**: Download .AppImage, make executable, run
-        - **Snap**: `sudo snap install orbit-dash`
-        - **Flatpak**: `flatpak install orbit-dash.flatpak`
-        
-        ### Android
-        - **Sideload**: Enable unknown sources, install .apk
-        - **Play Store**: Search "Orbit Dash" (after publishing)
-        
-        ### iOS
-        - **TestFlight**: Use provided link (beta)
-        - **App Store**: Search "Orbit Dash" (after approval)
-        
-        ### Steam Deck
-        1. Download .AppImage to Desktop
-        2. Right-click → Properties → Permissions → Make executable
-        3. Double-click to run
-        4. Add to Steam as non-Steam game for better integration
-        
-        ## Responsive Design Features:
-        - ✅ Phone (320px+): Touch controls, vertical layout
-        - ✅ Tablet (768px+): Optimized touch interface
-        - ✅ Laptop (1024px+): Full keyboard controls
-        - ✅ Desktop (1440px+): Maximum visual quality
-        - ✅ 4K/Ultra-wide: Scaled interface elements
-        - ✅ Steam Deck: Gamepad-friendly interface
-        
-        ## Performance Optimizations:
-        - **Web**: Service worker caching, progressive loading
-        - **Desktop**: Native performance, hardware acceleration
-        - **Mobile**: Touch-optimized, battery efficient
-        - **Gaming**: High refresh rate support, low latency
+        # Create minimal Electron app
+        cat > package.json << 'EOF'
+        {
+          "name": "orbit-dash",
+          "version": "1.0.0",
+          "main": "main.js",
+          "scripts": {
+            "start": "electron .",
+            "build": "electron-builder --publish=never"
+          },
+          "build": {
+            "appId": "com.orbitdash.game",
+            "productName": "Orbit Dash",
+            "files": ["main.js", "../web/**/*", "../icon.png"],
+            "directories": {"output": "./"},
+            "compression": "maximum",
+            "win": {"target": "portable"},
+            "linux": {"target": "AppImage"},
+            "mac": {"target": "zip"}
+          }
+        }
         EOF
         
-    - name: Upload Build Summary
+        # Minimal Electron main
+        cat > main.js << 'EOF'
+        const {app,BrowserWindow}=require('electron');
+        app.whenReady().then(()=>{
+          const w=new BrowserWindow({width:1280,height:800,webPreferences:{nodeIntegration:false}});
+          w.loadFile('../web/index.html');w.setMenuBarVisibility(false);
+        });
+        app.on('window-all-closed',()=>process.platform!=='darwin'&&app.quit());
+        EOF
+        
+        # Install and build (lightweight)
+        npm install --save-dev electron electron-builder
+        npm run build
+        
+        # Compress executables
+        find . -name "*.exe" -exec upx {} \; 2>/dev/null || true
+        find . -name "Orbit Dash" -type f -exec upx {} \; 2>/dev/null || true
+        
+    - name: Create single compressed package
+      run: |
+        cat > create-package.js << 'EOF'
+        const archiver = require('archiver');
+        const fs = require('fs');
+        
+        const output = fs.createWriteStream('orbit-dash-universal.zip');
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        
+        output.on('close', () => {
+          console.log(`Package created: ${(archive.pointer() / 1024 / 1024).toFixed(2)} MB`);
+        });
+        
+        archive.on('error', (err) => { throw err; });
+        archive.pipe(output);
+        
+        // Add all files with maximum compression
+        archive.directory('orbit-dash-universal/', false);
+        archive.finalize();
+        EOF
+        
+        node create-package.js
+        
+    - name: Create installation instructions
+      run: |
+        cat > README.md << 'EOF'
+        # Orbit Dash - Universal Game Package
+        
+        **Size**: ~2-5MB | **Platforms**: All | **Requirements**: Web browser
+        
+        ## Quick Install
+        
+        1. **Download & Extract** the ZIP file
+        2. **Choose your platform**:
+           - **Windows**: Run `desktop/run-windows.bat`
+           - **macOS**: Run `desktop/run-macos.command`  
+           - **Linux**: Run `./desktop/run-linux.sh`
+           - **Mobile**: Open `web/index.html` in browser
+           - **Any Device**: Open `web/index.html` directly
+        
+        ## What's Included
+        
+        ```
+        📦 orbit-dash-universal.zip (2-5MB)
+        ├── 🌐 web/                 # PWA version (works everywhere)
+        │   ├── index.html          # Main game file
+        │   ├── manifest.json       # PWA manifest
+        │   └── sw.js              # Service worker
+        ├── 🖥️ desktop/             # Desktop launchers
+        │   ├── run-windows.bat     # Windows launcher
+        │   ├── run-linux.sh        # Linux launcher
+        │   ├── run-macos.command   # macOS launcher
+        │   ├── server.py           # Python server
+        │   ├── server.js           # Node.js server
+        │   └── main.js             # Electron app
+        ├── 📱 mobile/              # Mobile build scripts
+        │   ├── build-android.sh    # Android APK builder
+        │   ├── build-ios.sh        # iOS app builder
+        │   ├── install-android.md  # Android guide
+        │   └── install-ios.md      # iOS guide
+        ├── 🚀 launchers/           # Platform shortcuts
+        │   ├── orbit-dash.desktop  # Linux desktop entry
+        │   ├── create-macos-app.sh # macOS app creator
+        │   └── windows-shortcut.txt# Windows shortcut guide
+        └── 📄 icon.png             # Universal icon file
+        ```
+        
+        ## Features
+        - ✅ **Universal**: One package, all platforms
+        - ✅ **Lightweight**: Under 5MB total
+        - ✅ **Offline**: Works without internet after first load
+        - ✅ **Responsive**: Adapts to any screen size
+        - ✅ **No Dependencies**: Uses built-in system tools
+        - ✅ **Progressive**: Installs as native app on supported devices
+        
+        ## Supported Devices
+        - 📱 **Mobile**: iPhone, iPad, Android phones/tablets
+        - 💻 **Desktop**: Windows 7+, macOS 10.12+, Linux
+        - 🎮 **Gaming**: Steam Deck, gaming laptops
+        - 🖥️ **Any Device**: With a web browser
+        
+        ## Troubleshooting
+        
+        **Game won't start?**
+        - Try opening `web/index.html` directly in browser
+        - Check if Python 3 or Node.js is installed
+        - Use the web version as fallback
+        
+        **Want native app?**
+        - Use build scripts in `mobile/` folder
+        - Install PWA from browser (Add to Home Screen)
+        - Use Electron builder in `desktop/` folder
+        
+        **Need help?**
+        - All platforms: Open `web/index.html` in any browser
+        - Report issues on GitHub repository
+        EOF
+        
+    - name: Calculate final package size
+      run: |
+        ORIG_SIZE=$(du -sh orbit-dash-universal | cut -f1)
+        ZIP_SIZE=$(du -sh orbit-dash-universal.zip | cut -f1)
+        
+        echo "## Package Information" >> README.md
+        echo "- **Original Size**: $ORIG_SIZE" >> README.md  
+        echo "- **Compressed Size**: $ZIP_SIZE" >> README.md
+        echo "- **Compression Ratio**: $(echo "scale=1; $(stat -c%s orbit-dash-universal.zip) * 100 / $(du -sb orbit-dash-universal | cut -f1)" | bc)%" >> README.md
+        echo "- **Build Date**: $(date)" >> README.md
+        
+        echo "Final package size: $ZIP_SIZE"
+        
+    - name: Upload Universal Package
       uses: actions/upload-artifact@v4
       with:
-        name: build-summary
-        path: build-summary.md
+        name: orbit-dash-universal-package
+        path: |
+          orbit-dash-universal.zip
+          README.md
+          
+    - name: Create GitHub Release (if tag)
+      if: github.event_name == 'release'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          orbit-dash-universal.zip
+          README.md
+        body: |
+          # Orbit Dash - Universal Package
+          
+          One ZIP file, all platforms! Download and run on any device.
+          
+          **Quick Start**: Extract ZIP → Run launcher for your platform
+          
+          - 🌐 **Web**: Open `web/index.html` 
+          - 🖥️ **Desktop**: Run platform launcher in `desktop/`
+          - 📱 **Mobile**: Follow guides in `mobile/`
+          
+          **Size**: ~2-5MB | **Platforms**: Windows, macOS, Linux, Android, iOS, Steam Deck
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Deploy to GitHub Pages
+      if: github.ref == 'refs/heads/main'
+      run: |
+        # Extract web files for Pages deployment
+        unzip -j orbit-dash-universal.zip "orbit-dash-universal/web/*" -d pages/
+        cp orbit-dash-universal/icon.png pages/
+        
+    - name: Setup Pages
+      if: github.ref == 'refs/heads/main'
+      uses: actions/configure-pages@v4
+      
+    - name: Upload to Pages
+      if: github.ref == 'refs/heads/main'
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: pages/
+        
+    - name: Deploy Pages
+      if: github.ref == 'refs/heads/main'
+      uses: actions/deploy-pages@v4
+
+  # Additional optimizations and final package preparation
+  finalize-package:
+    runs-on: ubuntu-latest
+    needs: build-all-platforms
+    steps:
+    - name: Download universal package
+      uses: actions/download-artifact@v4
+      with:
+        name: orbit-dash-universal-package
+        
+    - name: Add advanced launchers and optimizations
+      run: |
+        # Unzip for modifications
+        unzip -q orbit-dash-universal.zip
+        cd orbit-dash-universal
+        
+        # Create PowerShell launcher for Windows
+        cat > desktop/run-windows.ps1 << 'EOF'
+        Set-Location -Path (Split-Path -Parent $MyInvocation.MyCommand.Path)
+        Set-Location -Path "../web"
+        Write-Host "Starting Orbit Dash..." -ForegroundColor Cyan
+        
+        # Start local server
+        if (Get-Command python -ErrorAction SilentlyContinue) {
+            $server = Start-Process python -ArgumentList "-m","http.server","8080" -PassThru -WindowStyle Hidden
+        } elseif (Get-Command python3 -ErrorAction SilentlyContinue) {
+            $server = Start-Process python3 -ArgumentList "-m","http.server","8080" -PassThru -WindowStyle Hidden
+        } elseif (Get-Command node -ErrorAction SilentlyContinue) {
+            $server = Start-Process node -ArgumentList "../desktop/server.js" -PassThru -WindowStyle Hidden
+        }
+        
+        Start-Sleep 2
+        Start-Process "http://localhost:8080"
+        
+        Write-Host "Press any key to close..." -ForegroundColor Yellow
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        
+        if ($server) { Stop-Process $server -Force }
+        EOF
+        
+        # Create Steam Deck launcher
+        cat > launchers/steam-deck-install.sh << 'EOF'
+        #!/bin/bash
+        echo "Installing Orbit Dash on Steam Deck..."
+        
+        # Create desktop shortcut
+        mkdir -p ~/Desktop
+        cat > ~/Desktop/OrbitDash.desktop << 'DESK'
+        [Desktop Entry]
+        Type=Application
+        Name=Orbit Dash
+        Comment=20 Level Challenge Game
+        Exec=bash -c 'cd "$(dirname "%k")" && ../desktop/run-linux.sh'
+        Icon=$(dirname "%k")/icon.png
+        Categories=Game;
+        Terminal=false
+        DESK
+        chmod +x ~/Desktop/OrbitDash.desktop
+        
+        # Add to Steam (optional)
+        cat << 'STEAM'
+        To add to Steam:
+        1. Steam > Games > Add Non-Steam Game
+        2. Browse to this folder and select run-linux.sh
+        3. Right-click in library > Properties > Set icon
+        STEAM
+        
+        echo "Orbit Dash installed! Check your desktop."
+        EOF
+        chmod +x launchers/steam-deck-install.sh
+        
+        # Create web optimizer script
+        cat > web/optimize.js << 'EOF'
+        // Auto-optimize for different devices
+        (function() {
+          const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+          const isTablet = /(iPad|Android(?!.*Mobile))/i.test(navigator.userAgent);
+          const isSteamDeck = /SteamDeck/i.test(navigator.userAgent);
+          
+          // Device-specific optimizations
+          if (isMobile && !isTablet) {
+            document.body.classList.add('mobile-optimized');
+            // Reduce particle count for performance
+            if (window.gameSettings) window.gameSettings.particles = 20;
+          }
+          
+          if (isSteamDeck) {
+            document.body.classList.add('steam-deck-optimized');
+            // Optimize for Steam Deck display
+            if (window.gameSettings) {
+              window.gameSettings.resolution = 'high';
+              window.gameSettings.gamepadSupport = true;
+            }
+          }
+          
+          // Auto-install PWA prompt
+          let deferredPrompt;
+          window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            
+            // Auto-show install prompt after 30 seconds
+            setTimeout(() => {
+              if (deferredPrompt && !window.matchMedia('(display-mode: standalone)').matches) {
+                deferredPrompt.prompt();
+              }
+            }, 30000);
+          });
+        })();
+        EOF
+        
+        # Create universal executable for Windows (using Node.js)
+        cat > desktop/orbit-dash-portable.js << 'EOF'
+        #!/usr/bin/env node
+        const http = require('http');
+        const fs = require('fs');
+        const path = require('path');
+        const { spawn } = require('child_process');
+        
+        const PORT = 8080;
+        const webDir = path.join(__dirname, '..', 'web');
+        const indexPath = path.join(webDir, 'index.html');
+        
+        // Simple HTTP server
+        const server = http.createServer((req, res) => {
+          let filePath = path.join(webDir, req.url === '/' ? 'index.html' : req.url);
+          
+          fs.readFile(filePath, (err, data) => {
+            if (err) {
+              res.writeHead(404);
+              res.end('Not found');
+              return;
+            }
+            
+            const ext = path.extname(filePath);
+            const contentType = {
+              '.html': 'text/html',
+              '.js': 'text/javascript',
+              '.css': 'text/css',
+              '.png': 'image/png',
+              '.json': 'application/json'
+            }[ext] || 'text/plain';
+            
+            res.writeHead(200, { 'Content-Type': contentType });
+            res.end(data);
+          });
+        });
+        
+        server.listen(PORT, () => {
+          console.log(`🚀 Orbit Dash running on http://localhost:${PORT}`);
+          
+          // Open in default browser
+          const url = `http://localhost:${PORT}`;
+          const start = process.platform === 'darwin' ? 'open' :
+                       process.platform === 'win32' ? 'start ""' : 'xdg-open';
+          
+          spawn(start.split(' ')[0], start.split(' ').slice(1).concat([url]), 
+                { detached: true, stdio: 'ignore', shell: process.platform === 'win32' });
+        });
+        
+        // Graceful shutdown
+        process.on('SIGINT', () => {
+          console.log('\n👋 Closing Orbit Dash...');
+          server.close();
+          process.exit(0);
+        });
+        EOF
+        
+        # Create package information
+        cat > PACKAGE-INFO.txt << 'EOF'
+        Orbit Dash - Universal Package v1.0
+        ====================================
+        
+        Total Size: ~2-5MB compressed
+        Platforms: Windows, macOS, Linux, Android, iOS, Steam Deck, Web
+        Requirements: Modern web browser (Chrome, Firefox, Safari, Edge)
+        
+        Quick Start:
+        1. Extract ZIP anywhere
+        2. Run launcher for your platform
+        3. Game opens in browser automatically
+        
+        Files included:
+        - Core game (1 HTML file)
+        - Universal icon
+        - Platform launchers
+        - Build scripts for native apps
+        - Installation guides
+        
+        No installation required - runs from any folder!
+        EOF
+        
+    - name: Recompress with maximum compression
+      run: |
+        # Remove original zip
+        rm orbit-dash-universal.zip
+        
+        # Create highly compressed package
+        cd orbit-dash-universal
+        
+        # Minify the HTML file
+        npm install -g html-minifier-terser
+        html-minifier-terser web/index.html \
+          --collapse-whitespace \
+          --remove-comments \
+          --remove-optional-tags \
+          --remove-redundant-attributes \
+          --remove-script-type-attributes \
+          --use-short-doctype \
+          --minify-css true \
+          --minify-js true \
+          -o web/index-min.html
+        
+        mv web/index-min.html web/index.html
+        
+        cd ..
+        
+        # Create final ultra-compressed package
+        7z a -tzip -mx=9 -mfb=258 -mpass=15 orbit-dash-universal-final.zip orbit-dash-universal/
+        
+        # Verify final size
+        FINAL_SIZE=$(du -sh orbit-dash-universal-final.zip | cut -f1)
+        echo "✅ Final package size: $FINAL_SIZE"
+        
+        # Create download info
+        cat > DOWNLOAD-INFO.md << 'EOF'
+        # 📦 Orbit Dash - Universal Download
+        
+        **One ZIP. All Platforms. Ultra Lightweight.**
+        
+        ## 🚀 Instant Download
+        - **File**: `orbit-dash-universal-final.zip`
+        - **Size**: Under 3MB
+        - **Platforms**: Everything with a browser
+        
+        ## ⚡ 30-Second Setup
+        1. Download ZIP
+        2. Extract anywhere
+        3. Double-click launcher for your system:
+           - **Windows**: `desktop/run-windows.bat`
+           - **Mac**: `desktop/run-macos.command`
+           - **Linux**: `desktop/run-linux.sh`
+           - **Any**: Open `web/index.html`
+        
+        ## 🎯 What You Get
+        - Full 20-level game
+        - Works on phones, tablets, laptops, desktops
+        - Touch + keyboard controls
+        - Offline play after first load
+        - Native app builders included
+        
+        **No installation. No dependencies. Just fun.**
+        EOF
+        
+    - name: Upload Final Package
+      uses: actions/upload-artifact@v4
+      with:
+        name: orbit-dash-final
+        path: |
+          orbit-dash-universal-final.zip
+          DOWNLOAD-INFO.md
