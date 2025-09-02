@@ -324,19 +324,21 @@ jobs:
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
           
-          # Create IPA (which is just a ZIP with .ipa extension)
+          # Create proper IPA file
           zip -r "$IPA_PATH" Payload/
           
-          echo "IPA created: $IPA_PATH"
+          echo "✅ IPA created: $IPA_PATH"
+          ls -lh "$IPA_PATH"
         else
           echo "iOS app not found, creating placeholder IPA"
-          # Create minimal IPA structure for testing
+          # Create minimal IPA structure
           mkdir -p Payload/OrbitDash.app
           
           # Copy game content
           cp ../index.html Payload/OrbitDash.app/
+          cp ../icon.png Payload/OrbitDash.app/
           
-          # Create minimal Info.plist
+          # Create proper Info.plist for IPA
           cat > Payload/OrbitDash.app/Info.plist << 'PLIST'
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -348,15 +350,34 @@ jobs:
             <string>com.orbitdash.game</string>
             <key>CFBundleName</key>
             <string>Orbit Dash</string>
+            <key>CFBundleDisplayName</key>
+            <string>Orbit Dash</string>
             <key>CFBundleVersion</key>
-            <string>1.0</string>
+            <string>1.0.0</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0.0</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>LSRequiresIPhoneOS</key>
+            <true/>
+            <key>UIRequiredDeviceCapabilities</key>
+            <array>
+                <string>armv7</string>
+            </array>
+            <key>UISupportedInterfaceOrientations</key>
+            <array>
+                <string>UIInterfaceOrientationLandscapeLeft</string>
+                <string>UIInterfaceOrientationLandscapeRight</string>
+            </array>
         </dict>
         </plist>
         PLIST
           
+          # Create proper IPA file
           zip -r "$IPA_PATH" Payload/
+          echo "✅ Placeholder IPA created: $IPA_PATH"
         fi
         
     - name: Upload platform builds
