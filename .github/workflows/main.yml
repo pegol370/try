@@ -1,8 +1,8 @@
-name: Build Orbit Dash for Multiple Platforms
+name: Build Orbit Dash for All Platforms
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -196,9 +196,89 @@ EOL
         name: orbit-dash-android
         path: android-app/app/build/outputs/apk/debug/app-debug.apk
 
+  build-ios:
+    runs-on: macos-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Xcode
+      uses: actions/setup-xcode@v2
+      with:
+        xcode-version: '15.2'
+
+    - name: Create iOS project
+      run: |
+        mkdir -p OrbitDashIOS/OrbitDashIOS
+        cp index.html OrbitDashIOS/OrbitDashIOS/
+        
+        cat > OrbitDashIOS/OrbitDashIOS/OrbitDashIOSApp.swift << 'EOL'
+import SwiftUI
+import WebKit
+
+@main
+struct OrbitDashIOSApp: App {
+    var body: some Scene {
+        WindowGroup {
+            WebViewWrapper()
+        }
+    }
+}
+
+struct WebViewWrapper: UIViewRepresentable {
+    func makeUIView(context: Context) -> WKWebView {
+        let webView = WKWebView()
+        if let url = Bundle.main.url(forResource: "index", withExtension: "html") {
+            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        }
+        return webView
+    }
+    
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
+}
+EOL
+
+        cat > OrbitDashIOS/Package.swift << 'EOL'
+// swift-tools-version:5.5
+import PackageDescription
+
+let package = Package(
+    name: "OrbitDashIOS",
+    platforms: [.iOS(.v15)],
+    products: [
+        .executable(name: "OrbitDashIOS", targets: ["OrbitDashIOS"])
+    ],
+    targets: [
+        .executableTarget(
+            name: "OrbitDashIOS",
+            dependencies: [],
+            resources: [.process("index.html")]
+        )
+    ]
+)
+EOL
+
+    - name: Build iOS app
+      run: |
+        cd OrbitDashIOS
+        xcodebuild build -scheme OrbitDashIOS -destination 'generic/platform=iOS' -derivedDataPath build
+
+    - name: Package iOS app
+      run: |
+        cd OrbitDashIOS
+        mkdir -p output
+        cp -R build/Build/Products/Debug-iphoneos/OrbitDashIOS.app output/
+        zip -r OrbitDashIOS.zip output/
+
+    - name: Upload iOS artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: orbit-dash-ios
+        path: OrbitDashIOS/OrbitDashIOS.zip
+
   package-all:
     runs-on: ubuntu-latest
-    needs: [build-electron, build-android]
+    needs: [build-electron, build-android, build-ios]
     steps:
     - name: Download all artifacts
       uses: actions/download-artifact@v4
