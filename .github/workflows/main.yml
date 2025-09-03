@@ -1,430 +1,80 @@
-name: Build Universal Game Package
+name: Build Android APK
 
 on:
   push:
     branches: [ main, master ]
-  release:
-    types: [ published ]
+  workflow_dispatch:
 
 jobs:
-  build-all:
+  build:
     runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
     
-    - name: Setup environment
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        
+    - name: Setup Java JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+        
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+      
+    - name: Create Capacitor Project Structure
       run: |
-        # Install Node.js
-        curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-        sudo apt-get install -y nodejs
+        mkdir -p www
+        cp index.html www/
         
-        # Install build tools
-        npm install -g electron electron-builder pkg cordova
-        npm install sharp archiver
-        
-        # Install compression tools
-        sudo apt-get update
-        sudo apt-get install -y p7zip-full upx-ucl openjdk-17-jdk
-        
-        # Setup Android SDK (minimal)
-        wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
-        mkdir -p android-sdk/cmdline-tools
-        unzip -q commandlinetools-linux-9477386_latest.zip -d android-sdk/cmdline-tools
-        mv android-sdk/cmdline-tools/cmdline-tools android-sdk/cmdline-tools/latest
-        export ANDROID_HOME=$PWD/android-sdk
-        export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
-        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-30" "build-tools;30.0.3"
-        
-    - name: Create project structure
-      run: |
-        mkdir -p final-package/{executables,web,docs}
-        
-        # Generate icon
-        node -e "
-        const sharp = require('sharp');
-        const svg = \`<svg width='512' height='512' xmlns='http://www.w3.org/2000/svg'><defs><radialGradient id='bg' cx='50%' cy='50%' r='50%'><stop offset='0%' stop-color='#7dd3fc'/><stop offset='100%' stop-color='#0b1020'/></radialGradient></defs><circle cx='256' cy='256' r='240' fill='url(#bg)'/><circle cx='256' cy='256' r='80' fill='#e0f2fe'/><path d='M216 206 L296 256 L216 306 Z' fill='#0b1020'/></svg>\`;
-        sharp(Buffer.from(svg)).resize(512,512).png().toFile('icon.png');
-        sharp(Buffer.from(svg)).resize(256,256).png().toFile('icon-256.png');
-        "
-        
-    - name: Build Windows .exe
-      run: |
-        mkdir electron-win && cd electron-win
-        
+        # Create package.json
         cat > package.json << 'EOF'
         {
           "name": "orbit-dash",
           "version": "1.0.0",
-          "main": "main.js",
-          "build": {
-            "appId": "com.orbitdash.game",
-            "productName": "OrbitDash",
-            "files": ["main.js", "game.html", "icon.png"],
-            "win": {"target": "portable", "icon": "icon.png"},
-            "compression": "maximum",
-            "directories": {"output": "dist"}
+          "description": "Orbit Dash Game",
+          "dependencies": {
+            "@capacitor/android": "^5.5.1",
+            "@capacitor/cli": "^5.5.1",
+            "@capacitor/core": "^5.5.1"
           }
         }
         EOF
         
-        cat > main.js << 'EOF'
-        const {app,BrowserWindow,Menu}=require('electron');
-        const path=require('path');
-        app.whenReady().then(()=>{
-          Menu.setApplicationMenu(null);
-          const w=new BrowserWindow({width:1280,height:800,icon:path.join(__dirname,'icon.png'),webPreferences:{nodeIntegration:false,contextIsolation:true}});
-          w.loadFile('game.html');
-        });
-        app.on('window-all-closed',()=>app.quit());
-        EOF
-        
-        cp ../index.html game.html
-        cp ../icon.png .
-        
-        npm install electron electron-builder
-        npx electron-builder --win portable
-        
-        # Compress and copy
-        upx --best dist/*.exe 2>/dev/null || true
-        cp dist/*.exe ../final-package/executables/OrbitDash.exe
-        
-    - name: Build Linux .elf
-      run: |
-        mkdir electron-linux && cd electron-linux
-        
-        cat > package.json << 'EOF'
+        # Create capacitor.config.json
+        cat > capacitor.config.json << 'EOF'
         {
-          "name": "orbit-dash",
-          "version": "1.0.0",
-          "main": "main.js",
-          "build": {
-            "appId": "com.orbitdash.game",
-            "productName": "OrbitDash",
-            "files": ["main.js", "game.html", "icon.png"],
-            "linux": {"target": "AppImage", "icon": "icon.png"},
-            "compression": "maximum"
+          "appId": "com.orbitdash.game",
+          "appName": "Orbit Dash",
+          "webDir": "www",
+          "server": {
+            "androidScheme": "https"
           }
         }
         EOF
         
-        cat > main.js << 'EOF'
-        const {app,BrowserWindow,Menu}=require('electron');
-        const path=require('path');
-        app.whenReady().then(()=>{
-          Menu.setApplicationMenu(null);
-          const w=new BrowserWindow({width:1280,height:800,icon:path.join(__dirname,'icon.png'),webPreferences:{nodeIntegration:false,contextIsolation:true}});
-          w.loadFile('game.html');
-        });
-        app.on('window-all-closed',()=>app.quit());
-        EOF
-        
-        cp ../index.html game.html
-        cp ../icon.png .
-        
-        npm install electron electron-builder
-        npx electron-builder --linux AppImage
-        
-        # Compress and rename to .elf
-        upx --best dist/*.AppImage 2>/dev/null || true
-        cp dist/*.AppImage ../final-package/executables/OrbitDash.elf
-        chmod +x ../final-package/executables/OrbitDash.elf
-        
-    - name: Create macOS .app and .dmg
+    - name: Install Capacitor
       run: |
-        # Create fake macOS app structure (works on most systems)
-        mkdir -p "OrbitDash.app/Contents/MacOS"
-        mkdir -p "OrbitDash.app/Contents/Resources"
+        npm install
+        npx cap add android
         
-        # Create launcher script
-        cat > "OrbitDash.app/Contents/MacOS/OrbitDash" << 'EOF'
-        #!/bin/bash
-        cd "$(dirname "$0")/../Resources"
-        python3 -m http.server 8080 &
-        SERVER_PID=$!
-        sleep 2
-        open http://localhost:8080
-        wait $SERVER_PID
-        EOF
-        chmod +x "OrbitDash.app/Contents/MacOS/OrbitDash"
-        
-        # Create Info.plist
-        cat > "OrbitDash.app/Contents/Info.plist" << 'EOF'
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-            <key>CFBundleExecutable</key>
-            <string>OrbitDash</string>
-            <key>CFBundleIdentifier</key>
-            <string>com.orbitdash.game</string>
-            <key>CFBundleName</key>
-            <string>Orbit Dash</string>
-        </dict>
-        </plist>
-        EOF
-        
-        # Copy game and icon
-        cp index.html "OrbitDash.app/Contents/Resources/"
-        cp icon.png "OrbitDash.app/Contents/Resources/"
-        
-        # Create DMG
-        mkdir dmg-content
-        cp -r "OrbitDash.app" dmg-content/
-        echo "Drag OrbitDash.app to Applications folder" > dmg-content/INSTALL.txt
-        
-        # Simple DMG creation (using zip as fallback)
-        cd dmg-content && zip -r ../OrbitDash.dmg . && cd ..
-        
-        # Copy results
-        cp -r "OrbitDash.app" final-package/executables/
-        cp OrbitDash.dmg final-package/executables/
-        
-    - name: Build Android .apk
+    - name: Sync Capacitor
+      run: npx cap sync
+      
+    - name: Build APK
       run: |
-        export ANDROID_HOME=$PWD/android-sdk
-        export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
+        cd android
+        chmod +x ./gradlew
+        ./gradlew assembleDebug
         
-        cordova create orbit-android com.orbitdash.game OrbitDash
-        cd orbit-android
-        
-        cp ../index.html www/
-        
-        # Minimal Android config
-        cat > config.xml << 'EOF'
-        <?xml version='1.0' encoding='utf-8'?>
-        <widget id="com.orbitdash.game" version="1.0.0" xmlns="http://www.w3.org/ns/widgets">
-            <name>Orbit Dash</name>
-            <description>20 Level Challenge Game</description>
-            <content src="index.html" />
-            <preference name="Orientation" value="landscape" />
-            <preference name="android-minSdkVersion" value="22" />
-            <access origin="*" />
-        </widget>
-        EOF
-        
-        cordova platform add android
-        cordova build android --release
-        
-        cp platforms/android/app/build/outputs/apk/release/app-release-unsigned.apk ../final-package/executables/OrbitDash.apk
-        
-    - name: Build iOS .ipa
-      run: |
-        # Create proper iOS .ipa structure
-        mkdir -p Payload/OrbitDash.app
-        
-        # Copy game content
-        cp index.html Payload/OrbitDash.app/
-        cp icon.png Payload/OrbitDash.app/
-        
-        # Create proper iOS Info.plist
-        cat > Payload/OrbitDash.app/Info.plist << 'EOF'
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-            <key>CFBundleExecutable</key>
-            <string>OrbitDash</string>
-            <key>CFBundleIdentifier</key>
-            <string>com.orbitdash.game</string>
-            <key>CFBundleName</key>
-            <string>Orbit Dash</string>
-            <key>CFBundleDisplayName</key>
-            <string>Orbit Dash</string>
-            <key>CFBundleVersion</key>
-            <string>1.0.0</string>
-            <key>CFBundleShortVersionString</key>
-            <string>1.0.0</string>
-            <key>CFBundlePackageType</key>
-            <string>APPL</string>
-            <key>LSRequiresIPhoneOS</key>
-            <true/>
-            <key>UISupportedInterfaceOrientations</key>
-            <array>
-                <string>UIInterfaceOrientationLandscapeLeft</string>
-                <string>UIInterfaceOrientationLandscapeRight</string>
-            </array>
-        </dict>
-        </plist>
-        EOF
-        
-        # Create IPA file (ZIP with .ipa extension)
-        zip -r final-package/executables/OrbitDash.ipa Payload/
-        
-    - name: Create web version
-      run: |
-        # Optimize and copy web files
-        npm install -g html-minifier-terser
-        
-        html-minifier-terser index.html \
-          --collapse-whitespace \
-          --remove-comments \
-          --minify-css true \
-          --minify-js true \
-          -o final-package/web/index.html
-        
-        # Create PWA files
-        echo '{"name":"Orbit Dash","short_name":"OrbitDash","start_url":"./","display":"fullscreen","theme_color":"#7dd3fc","background_color":"#0b1020","icons":[{"src":"../icon.png","sizes":"512x512","type":"image/png"}]}' > final-package/web/manifest.json
-        
-        echo 'const CACHE="v1";self.addEventListener("install",e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(["/","index.html"]))));self.addEventListener("fetch",e=>e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request))));' > final-package/web/sw.js
-        
-        cp icon.png final-package/
-        
-    - name: Create documentation
-      run: |
-        cat > final-package/README.md << 'EOF'
-        # Orbit Dash - Universal Package
-        
-        **One ZIP. All Platforms. Real Executables.**
-        
-        ## Installation Guide
-        
-        ### Windows
-        - Run `executables/OrbitDash.exe`
-        - Double-click to start immediately
-        
-        ### Linux  
-        - Run `chmod +x executables/OrbitDash.elf && ./executables/OrbitDash.elf`
-        - Or double-click in file manager
-        
-        ### macOS
-        - Open `executables/OrbitDash.dmg`
-        - Or run `executables/OrbitDash.app`
-        
-        ### Android
-        - Enable "Unknown Sources" in Settings
-        - Install `executables/OrbitDash.apk`
-        
-        ### iOS
-        - Install `executables/OrbitDash.ipa` via:
-          - Xcode (Devices window)
-          - AltStore/Sideloadly
-          - TestFlight (if distributed)
-        
-        ### Any Device
-        - Open `web/index.html` in any browser
-        - Works on everything instantly
-        
-        ## What's Included
-        - ✅ Windows .exe (native executable)
-        - ✅ Linux .elf (AppImage format)  
-        - ✅ macOS .app/.dmg (app bundle)
-        - ✅ Android .apk (sideload ready)
-        - ✅ iOS .ipa (install ready)
-        - ✅ Web version (universal fallback)
-        
-        **Total size**: ~250MB → ~60MB compressed
-        **No internet required** after installation!
-        EOF
-        
-        # Create quick launchers
-        mkdir -p final-package/launchers
-        
-        echo "@echo off
-        cd /d \"%~dp0\"
-        start \"\" executables\\OrbitDash.exe" > final-package/launchers/Windows.bat
-        
-        echo "#!/bin/bash
-        cd \"\$(dirname \"\$0\")\"
-        ./executables/OrbitDash.elf" > final-package/launchers/Linux.sh
-        chmod +x final-package/launchers/Linux.sh
-        
-        echo "#!/bin/bash  
-        cd \"\$(dirname \"\$0\")\"
-        open executables/OrbitDash.app" > final-package/launchers/macOS.command
-        chmod +x final-package/launchers/macOS.command
-        
-    - name: Create final package
-      run: |
-        # Create ultra-compressed ZIP
-        cd final-package
-        7z a -tzip -mx=9 -mfb=258 ../OrbitDash-Universal.zip .
-        cd ..
-        
-        FINAL_SIZE=$(du -sh OrbitDash-Universal.zip | cut -f1)
-        echo "📦 Final package: $FINAL_SIZE"
-        
-        # Create download info
-        cat > DOWNLOAD.md << 'EOF'
-        # 🎮 Orbit Dash - Universal Download
-        
-        ## Quick Start
-        1. Download `OrbitDash-Universal.zip`
-        2. Extract anywhere
-        3. Run for your platform:
-           - **Windows**: `launchers/Windows.bat`
-           - **Linux**: `launchers/Linux.sh`  
-           - **macOS**: `launchers/macOS.command`
-           - **Mobile**: Install APK/IPA from `executables/`
-           - **Any**: Open `web/index.html`
-        
-        ## File List
-        ```
-        OrbitDash-Universal.zip (~60MB)
-        ├── executables/
-        │   ├── OrbitDash.exe     # Windows
-        │   ├── OrbitDash.elf     # Linux
-        │   ├── OrbitDash.app     # macOS app
-        │   ├── OrbitDash.dmg     # macOS installer
-        │   ├── OrbitDash.apk     # Android
-        │   └── OrbitDash.ipa     # iOS
-        ├── web/
-        │   └── index.html        # Universal web version
-        ├── launchers/            # Quick start scripts
-        └── README.md             # Full instructions
-        ```
-        
-        **Works on phones, tablets, laptops, desktops!**
-        EOF
-        
-    - name: Upload Final Package
+    - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: orbit-dash-universal
-        path: |
-          OrbitDash-Universal.zip
-          DOWNLOAD.md
-          
-    - name: Create GitHub Release
-      if: github.event_name == 'release'
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          OrbitDash-Universal.zip
-          DOWNLOAD.md
-        body: |
-          # 🎮 Orbit Dash - Universal Release
-          
-          **One download. All platforms. Real executables.**
-          
-          - ✅ Windows .exe
-          - ✅ Linux .elf  
-          - ✅ macOS .app/.dmg
-          - ✅ Android .apk
-          - ✅ iOS .ipa
-          - ✅ Web version
-          
-          Just download, extract, and run!
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        
-    - name: Deploy Web Version
-      if: github.ref == 'refs/heads/main'
-      run: |
-        mkdir pages
-        cp final-package/web/* pages/
-        cp final-package/icon.png pages/
-        
-    - name: Setup Pages
-      if: github.ref == 'refs/heads/main'
-      uses: actions/configure-pages@v4
-      
-    - name: Upload Pages
-      if: github.ref == 'refs/heads/main'
-      uses: actions/upload-pages-artifact@v3
-      with:
-        path: pages/
-        
-    - name: Deploy Pages
-      if: github.ref == 'refs/heads/main'
-      uses: actions/deploy-pages@v4
+        name: orbit-dash.apk
+        path: android/app/build/outputs/apk/debug/app-debug.apk
+        retention-days: 30
