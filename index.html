@@ -6,14 +6,6 @@
   <title>Orbit Dash - 20 Level Challenge</title>
   <meta name="description" content="Collect all shards, avoid hazards, and reach the warp gate in this exciting 20-level arcade game!">
   <meta name="keywords" content="arcade game, space challenge, orbital dash, html5 game">
-  
-  <!-- PWA Meta Tags -->
-  <link rel="manifest" href="manifest.json">
-  <meta name="theme-color" content="#7dd3fc">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Orbit Dash">
-  
   <style>
     :root {
       --bg: #0b1020;
@@ -1317,44 +1309,6 @@
 
   // Initialize game
   resize();
-
-  // PWA functionality
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', function() {
-      navigator.serviceWorker.register('service-worker.js')
-        .then(function(registration) {
-          console.log('ServiceWorker registered successfully');
-        })
-        .catch(function(error) {
-          console.log('ServiceWorker registration failed: ', error);
-        });
-    });
-  }
-
-  let deferredPrompt;
-  const installButton = document.createElement('button');
-  installButton.textContent = '📲 Install App';
-  installButton.className = 'btn';
-  installButton.style.display = 'none';
-  installButton.id = 'installButton';
-  installButton.addEventListener('click', async () => {
-    if (deferredPrompt) {
-      deferredPrompt.prompt();
-      const { outcome } = await deferredPrompt.userChoice;
-      if (outcome === 'accepted') {
-        installButton.style.display = 'none';
-      }
-      deferredPrompt = null;
-    }
-  });
-
-  document.querySelector('.right').prepend(installButton);
-
-  window.addEventListener('beforeinstallprompt', (e) => {
-    e.preventDefault();
-    deferredPrompt = e;
-    installButton.style.display = 'block';
-  });
   </script>
 </body>
 </html>
